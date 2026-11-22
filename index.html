@@ -409,11 +409,12 @@ function printedNumber(value) {
 function setKeys(name) {
   const key = normalized(name);
   const withoutPrefix = normalized(name.replace(/^(sword\s*&\s*shield|scarlet\s*&\s*violet|mega evolution|sun\s*&\s*moon)\s*[—–:-]\s*/i, ''));
-  return [...new Set([key, withoutPrefix])].filter(Boolean);
+  const aliases = { mepblackstarpromos: 'megaevolutionblackstarpromos', '30thclassiccollection': '30thcelebrationclassiccollection' };
+  return [...new Set([key, withoutPrefix, aliases[key]])].filter(Boolean);
 }
 function matchRareCandyRows(input) {
   const index = new Map();
-  const rows = input.replace(/\u00a0/g, ' ').split(/(?<=\S)\n+/).map(row => row.trim()).filter(Boolean);
+  const rows = input.replace(/\u00a0/g, ' ').split(/\r?\n/).map(row => row.trim()).filter(Boolean);
   for (const card of cards) {
     if (!sets.has(setId(card))) continue;
     const name = setName(card);
@@ -431,7 +432,8 @@ function matchRareCandyRows(input) {
       const before = normalized(row.slice(0, match.index));
       const previous = rows.slice(Math.max(0, i - 3), i).join(' ');
       const context = normalized(previous) + before;
-      const candidates = (index.get(printedNumber(match[1])) || []).filter(({ key }) => before.endsWith(key) || (!before && context.endsWith(key)));
+      const candidates = (index.get(printedNumber(match[1])) || []).filter(({ key }) =>
+        before.endsWith(key) || (!before && normalized(previous).endsWith(key)));
       const named = candidates.filter(({ card }) => context.includes(normalized(card.name)));
       const found = [...new Map((named.length ? named : candidates).map(({ card }) => [card.id, card])).values()];
       if (found.length !== 1) { unmatched++; continue; }
@@ -439,7 +441,7 @@ function matchRareCandyRows(input) {
       const tail = row.slice(match.index + match[0].length);
       const inline = tail.match(/^\s*(?:[a-z]{1,5}\s+)?(?:[x×]\s*)?(\d+)(?=\s|$)/i);
       const next = rows.slice(i + 1, i + 3).join(' ').match(/^(?:[a-z]{1,5}\s+)?(?:[x×]\s*)?(\d+)(?=\s|$)/i);
-      const quantity = Number(inline?.[1] || (match.index + match[0].length === row.length ? next?.[1] : '') || 1);
+      const quantity = Number(inline?.[1] || (/^\s*[a-z]{0,5}\s*$/i.test(tail) ? next?.[1] : '') || 1);
       if (!Number.isSafeInteger(quantity) || quantity < 1) { unmatched++; continue; }
       const existing = matches.get(card.id);
       matches.set(card.id, { card, quantity: Math.max(existing?.quantity || 0, quantity) });
