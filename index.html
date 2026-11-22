@@ -17,6 +17,10 @@
 .import-form{display:grid;gap:10px;margin-top:12px}.import-form input,.import-form textarea{width:100%}
 .import-form textarea{min-height:100px;padding:8px;background:#262031;color:var(--text);border:1px solid var(--line);border-radius:8px;font:inherit}
 .import-items{max-height:38vh;overflow:auto;padding-left:20px}.import-items li{margin:6px 0}
+
+.deck-view{grid-template-columns:minmax(280px,360px) minmax(0,1fr)}
+.deck-workspace{display:grid;gap:12px;min-width:0}.deck-tool{padding:15px;background:var(--panel);border:1px solid var(--line);border-radius:12px}.deck-tool h3{margin:0 0 8px}.deck-tool p{margin:6px 0}.tool-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0}.tool-controls input,.tool-controls select{max-width:100%;min-width:0}.tool-list{margin:8px 0;padding-left:22px;overflow-wrap:anywhere}.tool-list li{margin:4px 0}.tool-scroll{max-height:280px;overflow:auto}.missing{color:#ffd692}.deck-row{grid-template-columns:minmax(0,1fr) auto auto auto auto}.deck-row button{font-size:13px}.deck-row .meta{overflow-wrap:anywhere}.hand{display:flex;gap:8px;flex-wrap:wrap}.hand button{width:96px;text-align:left}.hand img{width:100%;display:block}.battle-note{white-space:pre-wrap;overflow-wrap:anywhere}.tool-controls textarea{width:100%;font:inherit;background:#262031;color:var(--text);padding:8px;border:1px solid var(--line);border-radius:8px}.swap-results button{width:100%;text-align:left;margin:3px 0}.swap-results{max-height:45vh;overflow:auto}.breakdown{display:flex;gap:8px;flex-wrap:wrap}.breakdown span{padding:4px 9px;border:1px solid var(--line);border-radius:8px}
+@media(max-width:820px){.deck-view{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -38,9 +42,38 @@
 <progress id="progress" max="60" value="0" aria-label="Deck size"></progress>
 <ul class="deck-list" id="deckList"></ul>
 <p class="empty" id="deckEmpty">Add an owned copy from the catalog to start your deck.</p>
-<div class="deck-actions"><button id="export" class="primary">Download deck</button><button id="deleteDeck">Delete deck</button></div>
+<div class="deck-actions"><button id="export" class="primary">Download deck</button><button id="openWorkspace">Deck tools</button><button id="deleteDeck">Delete deck</button></div>
 <p id="notice" class="notice" role="status"></p>
 </aside>
+<section id="deckWorkspace" class="deck-workspace" aria-label="Deck tools" hidden>
+  <section class="deck-tool"><h3>Saved versions</h3>
+    <form id="versionForm" class="tool-controls"><input id="versionName" aria-label="Version name" placeholder="e.g. Last battle" maxlength="80" required><button class="primary">Save version</button></form>
+    <div class="tool-controls"><select id="versions" aria-label="Version to compare"></select><button id="restoreVersion">Restore version</button><button id="copyVersion">Duplicate as deck</button></div>
+    <ul id="versionDiff" class="tool-list tool-scroll"></ul>
+  </section>
+  <section class="deck-tool"><h3>Sleeved deck checklist</h3>
+    <div class="tool-controls"><button id="markSleeved">Mark current list sleeved</button><button id="clearSleeved">Clear sleeved list</button></div>
+    <p id="sleevedSummary"></p><ul id="sleevedDiff" class="tool-list tool-scroll"></ul>
+  </section>
+  <section class="deck-tool"><h3>Deck checks and breakdown</h3>
+    <div class="tool-controls"><label>Format <select id="deckFormat"><option value="standard">Standard</option><option value="expanded">Expanded</option><option value="">No format filter</option></select></label><button id="retryChecks" hidden>Retry card details</button></div>
+    <div id="breakdown" class="breakdown"></div><ul id="deckChecks" class="tool-list tool-scroll" aria-live="polite"></ul>
+  </section>
+  <section class="deck-tool"><h3>Battle log</h3>
+    <form id="battleForm" class="tool-controls">
+      <input id="matchup" maxlength="80" placeholder="Opponent’s deck" aria-label="Opponent’s deck" required>
+      <select id="outcome" aria-label="Match result"><option>Win</option><option>Loss</option><option>Draw</option></select>
+      <select id="battleVersion" aria-label="Version used"></select>
+      <textarea id="battleNotes" rows="2" maxlength="1000" placeholder="Battle notes" aria-label="Battle notes"></textarea>
+      <button class="primary">Log battle</button>
+    </form>
+    <div id="battleHistory" class="tool-scroll"></div>
+  </section>
+  <section class="deck-tool"><h3>Practice opening hands</h3>
+    <div class="tool-controls"><button id="drawHand" class="primary">Draw seven cards</button><label>Track card <select id="handTarget"></select></label></div>
+    <p id="handOdds"></p><p id="handSummary" role="status"></p><div id="hand" class="hand"></div>
+  </section>
+</section>
 </div>
 <footer>Collection and decks are saved in this browser. Card data from <a href="https://tcgdex.dev/">TCGdex</a>. Pokémon and card artwork belong to their respective owners.</footer>
 </main>
@@ -61,6 +94,12 @@
 <p id="importStatus" role="status"></p>
 <ul class="import-items" id="importItems"></ul>
 <button id="applyImport" class="primary" hidden>Import selected cards</button>
+</dialog>
+<dialog id="swapDialog" aria-labelledby="swapTitle">
+<div class="dialog-top"><h2 id="swapTitle">Quick swap</h2><form method="dialog"><button>Close</button></form></div>
+<p id="swapFrom"></p>
+<div class="tool-controls"><input id="swapSearch" type="search" aria-label="Find replacement card" placeholder="Search name or card number"><label><input id="swapOwned" type="checkbox" checked> Owned copies available</label></div>
+<p id="swapStatus" role="status"></p><div id="swapResults" class="swap-results"></div>
 </dialog>
 <script>
 'use strict';
@@ -84,6 +123,8 @@ function selectProfile(name) {
   try { data = readProfile(name); }
   catch { data = null; $('notice').textContent = 'Saved data could not be read from this browser.'; }
   if (!data?.decks?.length) data = { collection: {}, decks: [newDeck()], active: '' };
+  data.cardRefs ||= {};
+  resetDeckTools();
   save();
   $('profileDialog').close();
   $('app').hidden = false;
@@ -99,6 +140,7 @@ function selectProfile(name) {
 let view = 'catalog';
 let page = 1;
 let cards = [];
+let catalogById = new Map();
 let sets = new Map();
 let setOrder = new Map();
 let catalogReady = false;
@@ -156,48 +198,59 @@ async function loadCatalog() {
   }
   if (cardResult.status === 'fulfilled' && Array.isArray(cardResult.value)) {
     cards = cardResult.value;
+    catalogById = new Map(cards.map(card => [card.id, card]));
     catalogReady = true;
   }
   catalogLoading = false;
   renderCatalog();
+  renderDeck();
   if (!catalogReady || setResult.status === 'rejected') {
     $('result').textContent = catalogReady ? 'Cards loaded. Set information is temporarily unavailable.' : 'Could not load the TCGdex catalog. Your saved cards are still available.';
     $('retry').hidden = false;
   }
 }
+function deckCard(id) {
+  return data.collection[id]?.card || data.cardRefs[id] || catalogById.get(id) ||
+    { id, name: id, localId: id.slice(id.lastIndexOf('-') + 1) };
+}
+function rememberCard(card) {
+  data.cardRefs[card.id] = { ...card, setName: setName(card) };
+}
 function changeOwned(card, amount) {
   const count = Math.max(0, owned(card.id) + amount);
   if (count) data.collection[card.id] = { card: { ...card, setName: setName(card) }, count };
-  else delete data.collection[card.id];
-  const adjusted = [];
-  for (const deck of data.decks) {
-    if ((deck.cards[card.id] || 0) <= count) continue;
-    adjusted.push(deck.name);
-    if (count) deck.cards[card.id] = count;
-    else delete deck.cards[card.id];
+  else {
+    rememberCard(card);
+    delete data.collection[card.id];
   }
-  if (save()) $('notice').textContent = adjusted.length ? 'Adjusted copies in ' + adjusted.join(', ') + '.' : '';
+  if (save()) $('notice').textContent = '';
   syncCard(card.id);
   if (!count && view === 'owned') renderCatalog();
   renderDeck();
 }
-function changeDeck(id, amount) {
+function changeDeck(id, amount, card = deckCard(id)) {
   const deck = activeDeck();
   const count = inDeck(id) + amount;
-  if (count < 0 || count > owned(id) || (amount > 0 && deckSize(deck) >= 60)) return;
-  if (count) deck.cards[id] = count;
-  else delete deck.cards[id];
+  if (count < 0 || (amount > 0 && deckSize(deck) >= 60)) return;
+  if (count) {
+    rememberCard(card);
+    deck.cards[id] = count;
+  } else delete deck.cards[id];
+  commitDeckChange();
+}
+function commitDeckChange() {
+  handDraw = [];
   if (save()) $('notice').textContent = '';
   renderDeck();
-  syncCard(id);
   updateAddButtons();
 }
 function updateAddButtons() {
   const full = deckSize(activeDeck()) >= 60;
   document.querySelectorAll('[data-add-card]').forEach(node => {
     const id = node.dataset.addCard;
-    node.disabled = full || owned(id) <= inDeck(id);
-    node.textContent = inDeck(id) ? 'Add to deck · ' + inDeck(id) : 'Add to deck';
+    const count = inDeck(id);
+    node.disabled = full;
+    node.textContent = (owned(id) > count ? 'Add to deck' : 'Plan copy') + (count ? ' · ' + count : '');
   });
 }
 function syncCard(id) {
@@ -239,7 +292,7 @@ function cardTile(card) {
   const count = element('span', owned(card.id) + ' owned');
   count.dataset.ownCount = card.id;
   counter.append(minus, count, button('+', () => changeOwned(card, 1), { accessibleLabel: 'Mark one ' + card.name + ' copy owned' }));
-  const add = button('Add to deck', () => changeDeck(card.id, 1));
+  const add = button('Add to deck', () => changeDeck(card.id, 1, card));
   add.dataset.addCard = card.id;
   controls.append(counter, add);
   tile.append(art, element('h3', card.name), element('p', setName(card) + ' · ' + card.localId, 'meta'), controls);
@@ -285,14 +338,18 @@ function renderDeck() {
   $('deckEmpty').hidden = size > 0;
   $('export').disabled = size === 0;
   $('deckList').replaceChildren(...Object.entries(deck.cards).map(([id, count]) => {
-    const entry = data.collection[id];
+    const card = deckCard(id);
+    const missing = Math.max(0, count - owned(id));
     const row = element('li', undefined, 'deck-row');
-    const name = element('span', entry.card.name);
-    name.append(element('small', setName(entry.card) + ' · ' + entry.card.localId, 'meta'));
-    row.append(name, button('−', () => changeDeck(id, -1), { accessibleLabel: 'Remove ' + entry.card.name + ' from deck' }),
-      element('span', count), button('+', () => changeDeck(id, 1), { disabled: size >= 60 || count >= entry.count, accessibleLabel: 'Add ' + entry.card.name + ' to deck' }));
+    const name = element('span', card.name);
+    name.append(element('small', setName(card) + ' · ' + card.localId +
+      (missing ? ' · ' + missing + ' missing' : ''), missing ? 'meta missing' : 'meta'));
+    row.append(name, button('−', () => changeDeck(id, -1), { accessibleLabel: 'Remove ' + card.name + ' from deck' }),
+      element('span', count), button('+', () => changeDeck(id, 1), { disabled: size >= 60, accessibleLabel: 'Add ' + card.name + ' to deck' }),
+      button('Swap', () => openSwap(id), { accessibleLabel: 'Swap one ' + card.name }));
     return row;
   }));
+  if (view === 'deck') renderDeckTools();
 }
 async function showDetails(card) {
   const requestId = ++detailRequest;
@@ -339,8 +396,11 @@ document.querySelectorAll('[data-view]').forEach(node => node.addEventListener('
   page = 1;
   $('catalog').hidden = view === 'deck';
   $('layout').classList.toggle('deck-view', view === 'deck');
+  $('deckWorkspace').hidden = view !== 'deck';
+  $('openWorkspace').hidden = view === 'deck';
   document.querySelectorAll('[data-view]').forEach(item => item.setAttribute('aria-pressed', String(item === node)));
   renderCatalog();
+  renderDeck();
 }));
 for (const id of ['search', 'set', 'sort']) $(id).addEventListener('input', () => { page = 1; renderCatalog(); });
 for (const [id, step] of [['previous', -1], ['next', 1]]) $(id).addEventListener('click', () => {
@@ -349,8 +409,10 @@ for (const [id, step] of [['previous', -1], ['next', 1]]) $(id).addEventListener
   $('catalog').scrollIntoView({ block: 'start' });
 });
 $('retry').addEventListener('click', loadCatalog);
+$('openWorkspace').addEventListener('click', () => document.querySelector('[data-view=deck]').click());
 $('decks').addEventListener('change', event => {
   data.active = event.target.value;
+  resetDeckTools();
   save();
   renderDeck();
   updateAddButtons();
@@ -359,6 +421,7 @@ $('newDeck').addEventListener('click', () => {
   const deck = newDeck();
   data.decks.push(deck);
   data.active = deck.id;
+  resetDeckTools();
   save();
   renderDeck();
   updateAddButtons();
@@ -377,6 +440,7 @@ $('deleteDeck').addEventListener('click', () => {
   data.decks = data.decks.filter(item => item.id !== deck.id);
   if (!data.decks.length) data.decks.push(newDeck());
   data.active = data.decks[0].id;
+  resetDeckTools();
   save();
   renderDeck();
   updateAddButtons();
@@ -384,7 +448,7 @@ $('deleteDeck').addEventListener('click', () => {
 $('export').addEventListener('click', () => {
   const deck = activeDeck();
   const lines = Object.entries(deck.cards).map(([id, count]) => {
-    const card = data.collection[id].card;
+    const card = deckCard(id);
     return count + ' ' + card.name + ' — ' + setName(card) + ' ' + card.localId;
   });
   const url = URL.createObjectURL(new Blob([deck.name + '\n\n' + lines.join('\n') + '\n\nTotal cards: ' + deckSize(deck) + '\n'], { type: 'text/plain' }));
@@ -514,6 +578,325 @@ $('applyImport').addEventListener('click', () => {
   resetImportPreview();
   $('importStatus').textContent = copies + ' copies added to ' + profile + '’s collection.' +
     (saved ? '' : ' Browser storage is unavailable.');
+});
+let versionSelection = '';
+let handDraw = [];
+let swapFromId = '';
+const pendingDetails = new Map();
+const failedDetails = new Set();
+function resetDeckTools() {
+  versionSelection = '';
+  handDraw = [];
+  $('versionForm').reset();
+  $('battleForm').reset();
+  $('handTarget').replaceChildren();
+}
+function listText(target, lines) {
+  $(target).replaceChildren(...lines.map(line => element('li', line)));
+}
+function cardLabel(id) {
+  const card = deckCard(id);
+  return card.name + ' · ' + setName(card) + ' #' + card.localId;
+}
+function cardDeltas(before, after) {
+  return [...new Set([...Object.keys(before), ...Object.keys(after)])]
+    .map(id => ({ id, count: (after[id] || 0) - (before[id] || 0) }))
+    .filter(entry => entry.count)
+    .sort((a, b) => a.count - b.count || numberOrder.compare(deckCard(a.id).name, deckCard(b.id).name));
+}
+function currentVersion() {
+  return activeDeck().versions?.find(version => version.id === versionSelection);
+}
+function renderVersions(deck) {
+  const versions = deck.versions || [];
+  const oldBattleSelection = $('battleVersion').value;
+  if (!versions.some(version => version.id === versionSelection)) versionSelection = versions[0]?.id || '';
+  const version = currentVersion();
+  $('versions').replaceChildren(...(versions.length ? versions.map(item => option(item.id, item.name)) : [option('', 'No saved versions')]));
+  $('versions').value = versionSelection;
+  $('versions').disabled = !versions.length;
+  $('restoreVersion').disabled = !version;
+  $('copyVersion').disabled = !version;
+  const differences = version ? cardDeltas(version.cards, deck.cards) : [];
+  listText('versionDiff', differences.length ? differences.map(({ id, count }) =>
+    (count > 0 ? 'Added ' : 'Removed ') + Math.abs(count) + ' × ' + cardLabel(id)) :
+    [version ? 'Current list matches this version.' : 'Save a version to compare future changes.']);
+  $('battleVersion').replaceChildren(option('', 'Current list'), ...versions.map(item => option(item.id, item.name)));
+  if (versions.some(item => item.id === oldBattleSelection)) $('battleVersion').value = oldBattleSelection;
+}
+function renderSleeved(deck) {
+  const current = deck.sleeved || {};
+  const changes = cardDeltas(current, deck.cards);
+  $('markSleeved').disabled = !deckSize(deck);
+  $('clearSleeved').disabled = !deck.sleeved;
+  $('sleevedSummary').textContent = deck.sleeved ? deckSize({ cards: current }) + ' cards marked sleeved.' : 'Mark the list you have physically sleeved to track your next swaps.';
+  const lines = [];
+  for (const { id, count } of changes) {
+    if (count < 0) {
+      lines.push('Put back ' + -count + ' × ' + cardLabel(id));
+      continue;
+    }
+    const inOtherDecks = data.decks.filter(other => other.id !== deck.id && other.sleeved?.[id]);
+    let loose = Math.min(count, Math.max(0, owned(id) - (current[id] || 0) -
+      inOtherDecks.reduce((sum, other) => sum + other.sleeved[id], 0)));
+    if (loose) lines.push('Pull ' + loose + ' × ' + cardLabel(id));
+    let remaining = count - loose;
+    let possibleBorrow = Math.max(0, owned(id) - (current[id] || 0) - loose);
+    for (const other of inOtherDecks) {
+      const borrow = Math.min(remaining, possibleBorrow, other.sleeved[id]);
+      if (!borrow) continue;
+      lines.push('Borrow ' + borrow + ' × ' + cardLabel(id) + ' from ' + other.name);
+      remaining -= borrow;
+      possibleBorrow -= borrow;
+    }
+    if (remaining) lines.push('Missing ' + remaining + ' × ' + cardLabel(id));
+  }
+  listText('sleevedDiff', lines.length ? lines : ['No cards to move.']);
+}
+function loadDeckDetails(ids) {
+  const missing = ids.filter(id => !detailCache.has(id) && !pendingDetails.has(id) && !failedDetails.has(id));
+  // Bound concurrent requests across deck switches and edits.
+  for (const id of missing.slice(0, Math.max(0, 5 - pendingDetails.size))) {
+    const job = request('/cards/' + encodeURIComponent(id))
+      .then(card => detailCache.set(id, card))
+      .catch(() => failedDetails.add(id))
+      .finally(() => {
+        pendingDetails.delete(id);
+        if (view === 'deck') {
+          renderChecks(activeDeck());
+          renderHand(activeDeck());
+        }
+      });
+    pendingDetails.set(id, job);
+  }
+}
+const isBasicPokemon = card => card?.category === 'Pokemon' && card.stage === 'Basic';
+const isBasicEnergy = card => card?.category === 'Energy' && (card.energyType === 'Normal' || card.energyType === 'Basic');
+function renderChecks(deck) {
+  const entries = Object.entries(deck.cards);
+  loadDeckDetails(entries.map(([id]) => id));
+  const types = { Pokemon: 0, Trainer: 0, Energy: 0, Unknown: 0 };
+  const names = new Map();
+  let basics = 0;
+  let missing = 0;
+  let formatUnknown = 0;
+  const illegal = [];
+  const evolutions = [];
+  const unsupported = [];
+  const format = deck.format ?? 'standard';
+  $('deckFormat').value = format;
+  for (const [id, count] of entries) {
+    const card = detailCache.get(id);
+    const name = card?.name || deckCard(id).name;
+    names.set(normalized(name), (names.get(normalized(name)) || []).concat({ name, card, count }));
+    if (card && Object.hasOwn(types, card.category)) types[card.category] += count;
+    else types.Unknown += count;
+    if (isBasicPokemon(card)) basics += count;
+    if (card?.evolveFrom) evolutions.push({ name, from: card.evolveFrom });
+    if (format) {
+      if (card?.legal?.[format] === false) illegal.push(cardLabel(id));
+      else if (card?.legal?.[format] !== true) formatUnknown += count;
+    }
+    if (failedDetails.has(id)) unsupported.push(id);
+    missing += Math.max(0, count - owned(id));
+  }
+  const totals = [types.Pokemon + ' Pokémon', types.Trainer + ' Trainer', types.Energy + ' Energy', basics + ' Basic Pokémon'];
+  if (types.Unknown) totals.push(types.Unknown + ' unclassified');
+  $('breakdown').replaceChildren(...totals.map(label => element('span', label)));
+  const size = deckSize(deck);
+  const checks = [size === 60 ? '60 cards' : (60 - size) + ' cards needed to reach 60'];
+  if (missing) checks.push(missing + ' planned copies missing from your collection.');
+  if (size && !basics && !types.Unknown) checks.push('No Basic Pokémon in this list.');
+  for (const group of names.values()) {
+    const counted = group.filter(entry => !isBasicEnergy(entry.card));
+    const total = counted.reduce((n, entry) => n + entry.count, 0);
+    if (total > 4 && counted.every(entry => entry.card || !/energy/i.test(entry.name))) {
+      checks.push(total + ' copies named ' + counted[0].name + ' across printings. Review the four-copy limit and any card-specific exceptions.');
+    }
+  }
+  for (const { name, from } of evolutions) {
+    if (typeof from === 'string' && !names.has(normalized(from))) checks.push(name + ' lists ' + from + ' as its prior evolution. Review the evolution line.');
+  }
+  if (illegal.length) checks.push('TCGdex flags these as outside ' + (format === 'standard' ? 'Standard' : 'Expanded') + ': ' + illegal.join('; '));
+  if (formatUnknown) checks.push('Format status unavailable for ' + formatUnknown + ' copies.');
+  if (entries.some(([id]) => pendingDetails.has(id))) checks.push('Loading card details…');
+  $('retryChecks').hidden = !unsupported.length;
+  listText('deckChecks', [...new Set(checks)]);
+}
+function oddsOfHit(total, hits, draws) {
+  if (!total) return 0;
+  let miss = 1;
+  for (let i = 0; i < Math.min(total, draws); i++) miss *= Math.max(0, total - hits - i) / (total - i);
+  return 100 * (1 - miss);
+}
+function renderHand(deck) {
+  const entries = Object.entries(deck.cards);
+  const size = deckSize(deck);
+  const oldTarget = $('handTarget').value;
+  const names = new Map();
+  for (const [id, count] of entries) {
+    const label = deckCard(id).name;
+    names.set(label, (names.get(label) || 0) + count);
+  }
+  if ($('handTarget').options.length !== names.size + 1 || [...names.keys()].some((name, i) => $('handTarget').options[i + 1]?.value !== name)) {
+    $('handTarget').replaceChildren(option('', 'Choose a card'), ...[...names.keys()].map(name => option(name, name)));
+    if (names.has(oldTarget)) $('handTarget').value = oldTarget;
+  }
+  const target = $('handTarget').value;
+  const complete = entries.every(([id]) => detailCache.has(id));
+  const basics = entries.reduce((sum, [id, count]) => sum + (isBasicPokemon(detailCache.get(id)) ? count : 0), 0);
+  const parts = [];
+  if (size >= 7 && complete) parts.push(oddsOfHit(size, basics, 7).toFixed(1) + '% chance of a Basic Pokémon');
+  if (size >= 7 && target) parts.push(oddsOfHit(size, names.get(target) || 0, 7).toFixed(1) + '% chance of ' + target);
+  $('handOdds').textContent = parts.join(' · ');
+  $('drawHand').disabled = size < 7;
+  const labels = [];
+  if (handDraw.length && complete) labels.push(handDraw.some(id => isBasicPokemon(detailCache.get(id))) ? 'Basic Pokémon in hand' : 'No Basic Pokémon · mulligan');
+  if (handDraw.length && target) labels.push(handDraw.filter(id => deckCard(id).name === target).length + ' × ' + target);
+  $('handSummary').textContent = size < 7 ? 'Add at least seven cards to practice a draw.' : labels.join(' · ');
+  const handKey = handDraw.join('|');
+  if ($('hand').dataset.cards === handKey) return;
+  $('hand').dataset.cards = handKey;
+  $('hand').replaceChildren(...handDraw.map(id => {
+    const card = deckCard(id);
+    const tile = button('', () => showDetails(card), { accessibleLabel: 'View ' + card.name });
+    const image = cardImage(card, 'low');
+    if (image) tile.append(image);
+    tile.append(element('span', card.name));
+    return tile;
+  }));
+}
+function renderBattleHistory(deck) {
+  $('battleHistory').replaceChildren(...(deck.battles || []).map(battle => {
+    const article = element('article');
+    const title = element('p');
+    title.append(element('strong', battle.outcome + ' vs. ' + battle.matchup));
+    article.append(title, element('small', battle.versionName + ' · ' + new Date(battle.date).toLocaleDateString() + ' · ' + deckSize(battle) + ' cards', 'meta'));
+    if (battle.notes) article.append(element('p', battle.notes, 'battle-note'));
+    const details = element('details');
+    details.append(element('summary', 'List used'));
+    const list = element('ul', undefined, 'tool-list');
+    list.append(...Object.entries(battle.cards).map(([id, count]) => element('li', count + ' × ' + cardLabel(id))));
+    details.append(list);
+    article.append(details);
+    return article;
+  }));
+  if (!deck.battles?.length) $('battleHistory').append(element('p', 'No battles logged.'));
+}
+function renderDeckTools() {
+  const deck = activeDeck();
+  renderVersions(deck);
+  renderSleeved(deck);
+  renderChecks(deck);
+  renderBattleHistory(deck);
+  renderHand(deck);
+}
+function openSwap(id) {
+  swapFromId = id;
+  $('swapFrom').textContent = 'Replace one ' + cardLabel(id);
+  $('swapSearch').value = '';
+  $('swapOwned').checked = true;
+  renderSwap();
+  $('swapDialog').showModal();
+  $('swapSearch').focus();
+}
+function renderSwap() {
+  const query = $('swapSearch').value.trim().toLowerCase();
+  const ownedOnly = $('swapOwned').checked;
+  const candidates = (ownedOnly ? Object.values(data.collection).map(entry => entry.card) : cards)
+    .filter(card => card.id !== swapFromId && (!ownedOnly || owned(card.id) > inDeck(card.id)) &&
+      (!query || card.name.toLowerCase().includes(query) || String(card.localId).toLowerCase() === query))
+    .sort((a, b) => numberOrder.compare(a.name, b.name));
+  $('swapStatus').textContent = candidates.length ? 'Showing ' + Math.min(30, candidates.length) + ' of ' + candidates.length + ' matches.' : 'No replacement cards match.';
+  $('swapResults').replaceChildren(...candidates.slice(0, 30).map(card => button(
+    card.name + ' · ' + setName(card) + ' #' + card.localId + (owned(card.id) > inDeck(card.id) ? '' : ' · planned copy'), () => {
+      const deck = activeDeck();
+      const num = inDeck(swapFromId);
+      if (!num) return;
+      if (num === 1) delete deck.cards[swapFromId];
+      else deck.cards[swapFromId] = num - 1;
+      rememberCard(card);
+      deck.cards[card.id] = inDeck(card.id) + 1;
+      $('swapDialog').close();
+      commitDeckChange();
+    })));
+}
+$('swapSearch').addEventListener('input', renderSwap);
+$('swapOwned').addEventListener('change', renderSwap);
+$('versions').addEventListener('change', event => {
+  versionSelection = event.target.value;
+  renderVersions(activeDeck());
+});
+$('versionForm').addEventListener('submit', event => {
+  event.preventDefault();
+  const name = $('versionName').value.trim();
+  if (!name) return;
+  const deck = activeDeck();
+  const version = { id: crypto.randomUUID(), name, cards: { ...deck.cards } };
+  (deck.versions ||= []).unshift(version);
+  versionSelection = version.id;
+  $('versionForm').reset();
+  if (save()) $('notice').textContent = 'Saved version “' + name + '”.';
+  renderVersions(deck);
+});
+$('restoreVersion').addEventListener('click', () => {
+  const version = currentVersion();
+  const deck = activeDeck();
+  if (!version || !cardDeltas(version.cards, deck.cards).length) return;
+  deck.versions.unshift({ id: crypto.randomUUID(), name: 'Before restoring ' + version.name, cards: { ...deck.cards } });
+  deck.cards = { ...version.cards };
+  commitDeckChange();
+});
+$('copyVersion').addEventListener('click', () => {
+  const version = currentVersion();
+  if (!version) return;
+  const source = activeDeck();
+  const deck = { ...newDeck(), name: (source.name + ' · ' + version.name).slice(0, 80), cards: { ...version.cards }, format: source.format };
+  data.decks.push(deck);
+  data.active = deck.id;
+  resetDeckTools();
+  commitDeckChange();
+});
+$('markSleeved').addEventListener('click', () => {
+  const deck = activeDeck();
+  deck.sleeved = { ...deck.cards };
+  save();
+  renderSleeved(deck);
+});
+$('clearSleeved').addEventListener('click', () => {
+  const deck = activeDeck();
+  delete deck.sleeved;
+  save();
+  renderSleeved(deck);
+});
+$('deckFormat').addEventListener('change', event => {
+  activeDeck().format = event.target.value;
+  save();
+  renderChecks(activeDeck());
+});
+$('retryChecks').addEventListener('click', () => {
+  for (const id of Object.keys(activeDeck().cards)) failedDetails.delete(id);
+  renderChecks(activeDeck());
+});
+$('battleForm').addEventListener('submit', event => {
+  event.preventDefault();
+  const matchup = $('matchup').value.trim();
+  if (!matchup) return;
+  const deck = activeDeck();
+  const version = deck.versions?.find(item => item.id === $('battleVersion').value);
+  (deck.battles ||= []).unshift({ matchup, outcome: $('outcome').value, notes: $('battleNotes').value.trim(), date: new Date().toISOString(),
+    versionName: version?.name || 'Current list snapshot', cards: { ...(version?.cards || deck.cards) } });
+  save();
+  $('battleForm').reset();
+  renderBattleHistory(deck);
+});
+$('handTarget').addEventListener('change', () => renderHand(activeDeck()));
+$('drawHand').addEventListener('click', () => {
+  const deck = activeDeck();
+  const pool = Object.entries(deck.cards).flatMap(([id, count]) => Array(count).fill(id));
+  handDraw = [];
+  for (let i = 0; i < 7; i++) handDraw.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
+  renderHand(deck);
 });
 document.querySelectorAll('[data-profile]').forEach(node =>
   node.addEventListener('click', () => selectProfile(node.dataset.profile)));
