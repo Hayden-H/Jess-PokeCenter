@@ -150,10 +150,30 @@ dialog.card-preview {
 @media (pointer: coarse) {
   .card-controls button { height: 36px; }
 }
+
+.photo-scanner { width: min(850px, calc(100% - 24px)); }
+.photo-actions { display:flex; gap:7px; flex-wrap:wrap; align-items:center; margin:10px 0; }
+.photo-actions label { cursor:pointer; padding:8px 12px; border:1px solid var(--line); border-radius:8px; background:#242226; }
+.photo-actions label:focus-within { outline:2px solid var(--mint); outline-offset:3px; }
+.photo-actions input[type=file] { position:absolute; width:1px; height:1px; opacity:0; padding:0; }
+.photo-layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:14px; }
+.photo-stage { position:relative; width:fit-content; max-width:100%; margin:auto; touch-action:none; cursor:crosshair; user-select:none; }
+.photo-stage img { display:block; max-width:100%; max-height:45vh; pointer-events:none; border-radius:8px; }
+.photo-crop { position:absolute; border:2px solid #ff9fb2; background:#df12341b; pointer-events:none; }
+.photo-scanner video { max-width:100%; max-height:45vh; display:block; margin:auto; }
+.photo-results { display:grid; gap:6px; max-height:34vh; overflow:auto; padding:3px; }
+.photo-results button { display:flex; gap:9px; text-align:left; align-items:center; width:100%; }
+.photo-results button img { width:30px; height:auto; border-radius:3px; }
+.photo-results button span { min-width:0; overflow-wrap:anywhere; }
+.photo-results button[aria-pressed=true] { border-color:#ff95a8; background:#502331; }
+.photo-scanner input[type=number] { width:5rem; }
+.photo-search { display:flex; gap:6px; margin-bottom:7px; }
+.photo-search input { flex:1; min-width:0; }
+@media(max-width:660px) { .photo-layout { grid-template-columns:1fr; } }
 </style>
 </head>
 <body>
-<header><div class="top"><div class="brand"><span class="logo" aria-hidden="true"></span>Jess’s PokéCenter</div><nav aria-label="Card views"><button data-view="catalog" aria-pressed="true">Card catalog</button><button data-view="owned" aria-pressed="false">My collection</button><button data-view="build" aria-pressed="false">Build a deck</button><button data-view="deck" aria-pressed="false">My decks</button></nav><div class="profile-actions"><button id="openImport" hidden>Import Rare Candy</button><button id="switchProfile" hidden></button></div></div></header>
+<header><div class="top"><div class="brand"><span class="logo" aria-hidden="true"></span>Jess’s PokéCenter</div><nav aria-label="Card views"><button data-view="catalog" aria-pressed="true">Card catalog</button><button data-view="owned" aria-pressed="false">My collection</button><button data-view="build" aria-pressed="false">Build a deck</button><button data-view="deck" aria-pressed="false">My decks</button></nav><div class="profile-actions"><button id="openScanner" hidden>Scan cards</button><button id="openImport" hidden>Import Rare Candy</button><button id="switchProfile" hidden></button></div></div></header>
 <main id="app" hidden>
 <section class="hero" id="hero"><h1 id="pageTitle">Pokémon TCG cards</h1><p id="pageDescription">Browse the English catalog, track your copies, and build a 60-card deck.</p></section>
 <div class="layout" id="layout">
@@ -253,6 +273,37 @@ dialog.card-preview {
 <div class="dialog-top"><h2 id="lineageTitle">Evolution line</h2><form method="dialog"><button>Close</button></form></div>
 <p id="lineageStatus" role="status"></p><button id="retryLineage" hidden>Retry</button><div id="lineageRows"></div>
 </dialog>
+<dialog id="photoDialog" class="photo-scanner" aria-labelledby="photoTitle">
+  <div class="dialog-top"><h2 id="photoTitle">Scan cards</h2><form method="dialog"><button>Close</button></form></div>
+  <div class="photo-actions">
+    <label>Upload photos <input id="photoFiles" type="file" accept="image/*" multiple></label>
+    <label id="phoneCamera">Take a photo <input id="photoCapture" type="file" accept="image/*" capture="environment"></label>
+    <button id="webCamera" hidden>Use webcam</button>
+  </div>
+  <div id="webCameraPanel" hidden>
+    <video id="cameraVideo" playsinline muted autoplay></video>
+    <div class="photo-actions"><button id="takeSnapshot">Take photo</button><button id="stopCamera">Close webcam</button></div>
+  </div>
+  <div class="photo-layout">
+    <section aria-label="Photo to scan">
+      <div id="photoStage" class="photo-stage" hidden><img id="photoImage" alt="Card photo to scan"><div id="photoCrop" class="photo-crop" hidden></div></div>
+      <p id="photoHint" class="meta" hidden>For a group photo, drag around one card at a time.</p>
+      <div class="photo-actions">
+        <button id="readPhoto" class="primary" disabled>Read photo</button><button id="resetCrop" hidden>Use whole photo</button>
+        <button id="prevPhoto" hidden>Previous photo</button><button id="nextPhoto" hidden>Next photo</button>
+      </div>
+      <p id="scanStatus" role="status"></p>
+    </section>
+    <section aria-label="Choose matching card">
+      <form id="photoSearchForm" class="photo-search"><input id="photoSearch" type="search" aria-label="Card name or number" placeholder="Search name or number"><button>Search</button></form>
+      <div id="photoResults" class="photo-results"></div>
+      <div class="photo-actions">
+        <label>Copies <input id="scanCopies" type="number" min="1" max="999" step="1" value="1"></label>
+        <button class="primary" id="addScanned" disabled>Add to collection</button>
+      </div>
+    </section>
+  </div>
+</dialog>
 <script>
 'use strict';
 const API = 'https://api.tcgdex.net/v2/en';
@@ -283,6 +334,7 @@ function selectProfile(name) {
   $('switchProfile').textContent = name + ' · Switch profile';
   $('switchProfile').hidden = false;
   $('openImport').hidden = false;
+  $('openScanner').hidden = false;
   $('search').value = '';
   $('set').value = '';
   selectView(routeView());
@@ -1380,6 +1432,336 @@ async function openLineage(card) {
   updateAddButtons();
 }
 $('retryLineage').addEventListener('click', () => openLineage(lineageCard));
+let photoQueue = [];
+let photoIndex = 0;
+let photoUrl = '';
+let photoCrop = null;
+let cropStart = null;
+let pendingPhotoLoad = 0;
+let scanBusy = false;
+let scanSession = 0;
+let scanSelection = null;
+let scannerWorker;
+let scannerScript;
+let webcamStream;
+let cameraSession = 0;
+
+function getScanner() {
+  if (!scannerScript) {
+    scannerScript = new Promise((resolve, reject) => {
+      const script = element('script');
+      script.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@6.0.1/dist/tesseract.min.js';
+      script.onload = resolve;
+      script.onerror = () => {
+        script.remove();
+        reject(new Error('Could not download the text reader.'));
+      };
+      document.head.append(script);
+    }).catch(error => { scannerScript = null; throw error; });
+  }
+  return scannerScript.then(() => {
+    if (!scannerWorker) {
+      scannerWorker = Tesseract.createWorker('eng', 1, {
+        workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@6.0.1/dist/worker.min.js',
+        logger: message => {
+          if (!scanBusy || !$('photoDialog').open || !message.status) return;
+          $('scanStatus').textContent = message.status === 'recognizing text'
+            ? 'Reading card text… ' + Math.round(message.progress * 100) + '%'
+            : 'Preparing the card scanner…';
+        }
+      }).then(async worker => {
+        await worker.setParameters({ tessedit_pageseg_mode: Tesseract.PSM.SPARSE_TEXT });
+        return worker;
+      }).catch(error => { scannerWorker = null; throw error; });
+    }
+    return scannerWorker;
+  });
+}
+
+function cardPhotoTokens(input) {
+  const lines = input.split(/\r?\n/).map(line => ' ' + line.normalize('NFKD').replace(/\p{M}/gu, '')
+    .toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/ +/g, ' ').trim() + ' ').filter(line => line.length > 2);
+  const numbers = [...input.matchAll(/\b([A-Z]{0,5}\d{1,4}[A-Z]?)\s*[/／]\s*[.,]?\s*([A-Z]{0,5}\d{1,4})\b/gi)]
+    .map(([, numerator, denominator]) => [printedNumber(numerator), printedNumber(denominator)]);
+  const standalone = [...input.matchAll(/\b(?:[A-Z]{1,5}\d{2,4}|0\d{2,3})\b/gi)]
+    .map(([token]) => printedNumber(token));
+  return { lines, numbers, standalone: new Set(standalone) };
+}
+
+function matchCardPhoto(text, catalog) {
+  const { lines, numbers, standalone } = cardPhotoTokens(text);
+  const names = new Map();
+  const matches = [];
+  for (const card of catalog) {
+    const name = normalized(card.name);
+    const num = printedNumber(card.localId);
+    if (!names.has(name)) {
+      const nameWords = card.name.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase()
+        .replace(/[^a-z0-9 ]/g, ' ').replace(/ +/g, ' ').trim();
+      const index = name.length >= 3 ? lines.findIndex(line => line.includes(' ' + nameWords + ' ')) : -1;
+      names.set(name, index < 0 ? 0 : 55 - Math.min(index, 25) + Math.min(name.length, 15));
+    }
+    const nameScore = names.get(name);
+    const fraction = numbers.find(([numerator]) => numerator === num);
+    const official = sets.get(setId(card))?.cardCount?.official;
+    const matchingSetSize = fraction && official && fraction[1] === printedNumber(official);
+    if (!nameScore && !fraction && !standalone.has(num)) continue;
+    const score = nameScore + (fraction ? 65 : standalone.has(num) ? 20 : 0) +
+      (matchingSetSize ? 35 : 0);
+    matches.push({ card, score, hasName: Boolean(nameScore), hasNumber: Boolean(fraction || standalone.has(num)) });
+  }
+  return matches.sort((a, b) => b.score - a.score ||
+    Number(b.hasName && b.hasNumber) - Number(a.hasName && a.hasNumber) ||
+    (setOrder.get(setId(a.card)) ?? 9999) - (setOrder.get(setId(b.card)) ?? 9999))
+    .slice(0, 14).map(entry => entry.card);
+}
+
+function showScanMatches(matches) {
+  scanSelection = null;
+  $('addScanned').disabled = true;
+  $('photoResults').replaceChildren(...matches.map(card => {
+    const item = button('', () => {
+      scanSelection = card;
+      for (const candidate of $('photoResults').children) candidate.setAttribute('aria-pressed', String(candidate === item));
+      $('addScanned').disabled = false;
+    });
+    item.setAttribute('aria-pressed', 'false');
+    const image = cardImage(card, 'low');
+    if (image) item.append(image);
+    const label = element('span');
+    label.append(element('strong', card.name), element('br'),
+      element('small', setName(card) + ' #' + card.localId + ' · ' + owned(card.id) + ' owned', 'meta'));
+    item.append(label);
+    return item;
+  }));
+}
+
+function clearPhotoCrop() {
+  photoCrop = null;
+  $('photoCrop').hidden = true;
+  $('resetCrop').hidden = true;
+}
+function drawPhotoCrop(box) {
+  const overlay = $('photoCrop');
+  overlay.hidden = false;
+  for (const [property, value] of Object.entries({ left:box.x, top:box.y, width:box.w, height:box.h })) {
+    overlay.style[property] = value * 100 + '%';
+  }
+}
+function cropPoint(event) {
+  const bounds = $('photoImage').getBoundingClientRect();
+  const clamp = n => Math.max(0, Math.min(1, n));
+  return { x:clamp((event.clientX - bounds.left) / bounds.width), y:clamp((event.clientY - bounds.top) / bounds.height) };
+}
+function movePhotoCrop(event) {
+  if (!cropStart || cropStart.pointer !== event.pointerId) return;
+  const end = cropPoint(event);
+  photoCrop = { x:Math.min(cropStart.x,end.x), y:Math.min(cropStart.y,end.y),
+    w:Math.abs(end.x-cropStart.x), h:Math.abs(end.y-cropStart.y) };
+  drawPhotoCrop(photoCrop);
+}
+$('photoStage').addEventListener('pointerdown', event => {
+  if (scanBusy || event.button !== 0) return;
+  cropStart = { ...cropPoint(event), pointer:event.pointerId };
+  $('photoStage').setPointerCapture(event.pointerId);
+});
+$('photoStage').addEventListener('pointermove', movePhotoCrop);
+$('photoStage').addEventListener('pointerup', event => {
+  if (!cropStart || cropStart.pointer !== event.pointerId) return;
+  movePhotoCrop(event);
+  cropStart = null;
+  if (photoCrop.w < .035 || photoCrop.h < .035) clearPhotoCrop();
+  else $('resetCrop').hidden = false;
+});
+$('photoStage').addEventListener('pointercancel', () => { cropStart = null; clearPhotoCrop(); });
+$('resetCrop').addEventListener('click', clearPhotoCrop);
+
+function updatePhotoButtons() {
+  const loaded = $('photoImage').complete && $('photoImage').naturalWidth > 0 && !$('photoStage').hidden;
+  $('readPhoto').disabled = scanBusy || !loaded;
+  $('prevPhoto').hidden = photoQueue.length < 2;
+  $('nextPhoto').hidden = photoQueue.length < 2;
+  $('prevPhoto').disabled = scanBusy || photoIndex === 0;
+  $('nextPhoto').disabled = scanBusy || photoIndex >= photoQueue.length - 1;
+}
+function releasePhoto() {
+  if (photoUrl) URL.revokeObjectURL(photoUrl);
+  photoUrl = '';
+  $('photoImage').removeAttribute('src');
+  $('photoStage').hidden = true;
+  $('photoHint').hidden = true;
+  clearPhotoCrop();
+  updatePhotoButtons();
+}
+async function openPhoto(index) {
+  if (!photoQueue[index] || scanBusy) return;
+  photoIndex = index;
+  const selection = ++pendingPhotoLoad;
+  releasePhoto();
+  showScanMatches([]);
+  $('photoSearch').value = '';
+  $('scanCopies').value = '1';
+  $('scanStatus').textContent = 'Loading photo…';
+  const url = URL.createObjectURL(photoQueue[index]);
+  const preview = $('photoImage');
+  photoUrl = url;
+  preview.src = url;
+  try {
+    await preview.decode();
+    if (selection !== pendingPhotoLoad) return;
+    $('photoStage').hidden = false;
+    $('photoHint').hidden = false;
+    $('scanStatus').textContent = 'Photo ' + (index + 1) + ' of ' + photoQueue.length + ' · Ready to read';
+  } catch {
+    if (selection !== pendingPhotoLoad) return;
+    $('scanStatus').textContent = 'This photo could not be opened. Try a JPG, PNG, or WebP.';
+  }
+  updatePhotoButtons();
+}
+function queuePhotos(files) {
+  if (scanBusy || !files.length) return;
+  stopWebcam();
+  photoQueue = Array.from(files);
+  openPhoto(0);
+}
+$('photoFiles').addEventListener('change', event => { queuePhotos(event.target.files); event.target.value = ''; });
+$('photoCapture').addEventListener('change', event => { queuePhotos(event.target.files); event.target.value = ''; });
+$('prevPhoto').addEventListener('click', () => openPhoto(photoIndex - 1));
+$('nextPhoto').addEventListener('click', () => openPhoto(photoIndex + 1));
+
+function stopWebcam() {
+  cameraSession++;
+  if (webcamStream) webcamStream.getTracks().forEach(track => track.stop());
+  webcamStream = null;
+  $('cameraVideo').srcObject = null;
+  $('webCameraPanel').hidden = true;
+}
+$('webCamera').addEventListener('click', async () => {
+  if (scanBusy || !navigator.mediaDevices?.getUserMedia) return;
+  stopWebcam();
+  const token = cameraSession;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' } }, audio:false });
+    if (token !== cameraSession || !$('photoDialog').open) {
+      stream.getTracks().forEach(track => track.stop());
+      return;
+    }
+    webcamStream = stream;
+    $('cameraVideo').srcObject = stream;
+    $('webCameraPanel').hidden = false;
+  } catch {
+    if (token === cameraSession) $('scanStatus').textContent = 'Could not open the webcam. You can still upload a photo.';
+  }
+});
+$('stopCamera').addEventListener('click', stopWebcam);
+$('takeSnapshot').addEventListener('click', () => {
+  const video = $('cameraVideo');
+  if (!video.videoWidth || !video.videoHeight) return;
+  const canvas = element('canvas');
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video, 0, 0);
+  const token = cameraSession;
+  canvas.toBlob(blob => {
+    if (blob && token === cameraSession && $('photoDialog').open) queuePhotos([blob]);
+  }, 'image/jpeg', .93);
+});
+
+function scanCanvas(image, crop, maxSize) {
+  const x = Math.round(crop.x * image.naturalWidth);
+  const y = Math.round(crop.y * image.naturalHeight);
+  const width = Math.max(1, Math.round(crop.w * image.naturalWidth));
+  const height = Math.max(1, Math.round(crop.h * image.naturalHeight));
+  const scale = Math.min(maxSize / Math.max(width, height), 2);
+  const canvas = element('canvas');
+  canvas.width = Math.max(1, Math.round(width * scale));
+  canvas.height = Math.max(1, Math.round(height * scale));
+  const context = canvas.getContext('2d');
+  context.fillStyle = '#ffffff';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.filter = 'grayscale(1) contrast(1.2)';
+  context.drawImage(image, x, y, width, height, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+$('readPhoto').addEventListener('click', async () => {
+  if (scanBusy || !catalogReady) {
+    if (!catalogReady) $('scanStatus').textContent = 'The card catalog is still loading. Try again shortly.';
+    return;
+  }
+  const session = scanSession;
+  const image = $('photoImage');
+  const crop = photoCrop || {x:0,y:0,w:1,h:1};
+  const titleCrop = { x:crop.x + crop.w * .04, y:crop.y + crop.h * .022, w:crop.w * .9, h:crop.h * .115 };
+  const bottomCrop = { ...crop, y:crop.y + crop.h * .8, h:crop.h * .2 };
+  const title = scanCanvas(image, titleCrop, 1800);
+  const bottom = scanCanvas(image, bottomCrop, 1800);
+  scanBusy = true;
+  updatePhotoButtons();
+  showScanMatches([]);
+  $('scanStatus').textContent = 'Preparing the card scanner…';
+  try {
+    const worker = await getScanner();
+    if (session !== scanSession) return;
+    await worker.setParameters({ tessedit_pageseg_mode: Tesseract.PSM.SINGLE_LINE });
+    const first = await worker.recognize(title);
+    if (session !== scanSession) return;
+    await worker.setParameters({ tessedit_pageseg_mode: Tesseract.PSM.SPARSE_TEXT });
+    const second = await worker.recognize(bottom);
+    if (session !== scanSession) return;
+    const matches = matchCardPhoto(first.data.text + '\n' + second.data.text, cards);
+    showScanMatches(matches);
+    $('scanStatus').textContent = matches.length
+      ? 'Choose the printing that matches your photo, then add it.'
+      : 'No confident matches. Try a tighter crop, brighter photo, or search by name or number.';
+  } catch {
+    if (session === scanSession) $('scanStatus').textContent = 'The photo could not be read. Try again or search by name or number.';
+  } finally {
+    scanBusy = false;
+    updatePhotoButtons();
+  }
+});
+$('photoSearchForm').addEventListener('submit', event => {
+  event.preventDefault();
+  const value = $('photoSearch').value.trim();
+  if (!value || scanBusy) return;
+  const query = value.toLowerCase();
+  const id = printedNumber(query.split('/')[0]);
+  const matches = cards.filter(card => card.name.toLowerCase().includes(query) ||
+    card.id.toLowerCase() === query || (/\d/.test(query) && printedNumber(card.localId) === id));
+  showScanMatches(matches.slice(0, 30));
+  $('scanStatus').textContent = matches.length > 30 ? 'Showing the first 30 matches.' :
+    matches.length ? 'Choose a printing to add.' : catalogReady ? 'No catalog matches.' : 'The card catalog is still loading.';
+});
+$('addScanned').addEventListener('click', () => {
+  const card = scanSelection;
+  const count = Number($('scanCopies').value);
+  if (!card || !Number.isSafeInteger(count) || count < 1 || count > 999) {
+    $('scanStatus').textContent = 'Choose a printing and enter 1–999 copies.';
+    return;
+  }
+  changeOwned(card, count);
+  showScanMatches([]);
+  $('scanStatus').textContent = 'Added ' + count + ' × ' + card.name + ' to ' + profile + '’s collection.';
+});
+$('openScanner').addEventListener('click', () => {
+  $('photoTitle').textContent = 'Scan cards · ' + profile;
+  $('scanStatus').textContent = 'Take or upload a picture of an English Pokémon card.';
+  $('photoSearch').value = '';
+  $('scanCopies').value = '1';
+  $('webCamera').hidden = !navigator.mediaDevices?.getUserMedia || matchMedia('(pointer: coarse)').matches;
+  $('phoneCamera').hidden = !matchMedia('(pointer: coarse)').matches && !('ontouchstart' in window);
+  showScanMatches([]);
+  updatePhotoButtons();
+  $('photoDialog').showModal();
+});
+$('photoDialog').addEventListener('close', () => {
+  scanSession++;
+  pendingPhotoLoad++;
+  stopWebcam();
+  photoQueue = [];
+  releasePhoto();
+  showScanMatches([]);
+});
 document.querySelectorAll('[data-profile]').forEach(node =>
   node.addEventListener('click', () => selectProfile(node.dataset.profile)));
 $('switchProfile').addEventListener('click', () => $('profileDialog').showModal());
