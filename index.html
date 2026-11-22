@@ -48,10 +48,15 @@
   <div class="chip-row secondary-row" role="group" aria-label="Collection and evolution filters">
     <button id="builderOwned" class="chip" aria-pressed="false"><span aria-hidden="true">✓</span> Owned only</button>
     <button id="showStages" class="chip" aria-pressed="false"><span aria-hidden="true">⑴</span> Evolution stages</button>
+    <button id="builderAbilities" class="chip" aria-pressed="false"><span aria-hidden="true">✦</span> Has an ability</button>
     <button id="resetBuilder" class="chip">Clear filters</button>
   </div>
+  <form id="abilityForm" class="chip-row secondary-row" hidden>
+    <input id="abilityQuery" type="search" aria-label="Ability name or effect" placeholder="Try draw cards or Netherworld Gate" maxlength="120">
+    <button type="submit">Find ability</button><button id="clearAbilityQuery" type="button" hidden>Clear search</button>
+  </form>
 </div>
-<div class="filters"><input id="search" type="search" aria-label="Search by card name or number" placeholder="Search name or card number"><select id="set" aria-label="Filter by set"><option value="">All sets</option></select><select id="sort" aria-label="Sort cards"><option value="new">Newest sets</option><option value="old">Oldest sets</option><option value="name">Card name A–Z</option></select></div>
+<div class="filters"><input id="search" type="search" aria-label="Search by card name or number" placeholder="Search name or card number"><select id="set" aria-label="Filter by set"><option value="">All sets</option></select><select id="sort" aria-label="Sort cards"><option value="new">Newest sets</option><option value="old">Oldest sets</option><option value="name">Card name A–Z</option><option id="abilitySort" value="ability" hidden disabled>Abilities first</option></select></div>
 <div class="result"><span id="result" role="status">Loading the TCGdex catalog…</span><button id="retry" hidden>Retry</button></div>
 <div id="grid" class="grid"></div>
 <div class="pagination" id="pagination" hidden><button id="previous">Previous</button><span id="page"></span><button id="next">Next</button></div>
@@ -341,26 +346,33 @@ function cardTile(card) {
 function renderCatalog() {
   const usingBuilder = view === 'build';
   const filterState = usingBuilder ? currentBuilderFilter() : null;
+  const abilityState = usingBuilder && (abilitiesOnly || abilitySort) ? requestAbilities(abilityQuery) : null;
   const ownedOnly = view === 'owned' || (usingBuilder && builderOwnedOnly);
   const source = ownedOnly ? Object.values(data.collection).map(entry => entry.card) : cards;
-  if (usingBuilder && filterState && !filterState.ids) {
+  const waitingFilter = [filterState, abilityState].filter(state => state && !state.ids);
+  if (waitingFilter.length) {
+    const failed = waitingFilter.some(state => state.failed);
     $('grid').replaceChildren();
     $('pagination').hidden = true;
-    $('result').textContent = filterState.failed ? 'Could not load this filter. Retry to load its cards.' : 'Loading matching cards…';
-    $('retry').hidden = !filterState.failed;
+    $('result').textContent = failed ? 'Could not load this filter. Retry to load its cards.' : 'Loading matching cards…';
+    $('retry').hidden = !failed;
     return;
   }
   if (catalogReady && sets.size) $('retry').hidden = true;
   const chosenSet = $('set').value;
   const query = $('search').value.trim().toLowerCase().replace(/^#/, '');
   const sort = $('sort').value;
-  const filtered = source.filter(card => (!filterState || filterState.ids.has(card.id)) && (!chosenSet || setId(card) === chosenSet) &&
+  const filtered = source.filter(card => (!abilitiesOnly || !usingBuilder || abilityState.ids.has(card.id)) && (!filterState || filterState.ids.has(card.id)) && (!chosenSet || setId(card) === chosenSet) &&
     (!query || card.name.toLowerCase().includes(query) || card.id.toLowerCase() === query ||
       String(card.localId).toLowerCase() === query ||
       String(card.localId).replace(/^0+(?=\d)/, '') === query.split('/')[0]));
   filtered.sort((a, b) => {
     const setDifference = (setOrder.get(setId(a)) ?? Infinity) - (setOrder.get(setId(b)) ?? Infinity);
     const byNumber = numberOrder.compare(a.localId, b.localId);
+    if (sort === 'ability' && abilityState) {
+      const abilityDifference = Number(abilityState.ids.has(b.id)) - Number(abilityState.ids.has(a.id));
+      if (abilityDifference) return abilityDifference;
+    }
     if (sort === 'name') return numberOrder.compare(a.name, b.name) || setDifference || byNumber;
     return (sort === 'old' ? -setDifference : setDifference) || byNumber;
   });
@@ -482,7 +494,11 @@ function navigateView(next) {
 document.querySelectorAll('[data-view]').forEach(node => node.addEventListener('click', () => navigateView(node.dataset.view)));
 window.addEventListener('popstate', () => selectView(routeView()));
 window.addEventListener('hashchange', () => selectView(routeView()));
-for (const id of ['search', 'set', 'sort']) $(id).addEventListener('input', () => { page = 1; renderCatalog(); });
+for (const id of ['search', 'set', 'sort']) $(id).addEventListener('input', () => {
+  if (id === 'sort' && view === 'build') abilitySort = $('sort').value === 'ability';
+  page = 1;
+  renderCatalog();
+});
 for (const [id, step] of [['previous', -1], ['next', 1]]) $(id).addEventListener('click', () => {
   page += step;
   renderCatalog();
@@ -490,8 +506,10 @@ for (const [id, step] of [['previous', -1], ['next', 1]]) $(id).addEventListener
 });
 $('retry').addEventListener('click', () => {
   const filter = view === 'build' && currentBuilderFilter();
-  if (filter?.failed) {
-    builderResults.delete(filter.key);
+  const abilities = view === 'build' && abilityResults.get(abilityQuery);
+  if (filter?.failed || abilities?.failed) {
+    if (filter?.failed) builderResults.delete(filter.key);
+    if (abilities?.failed) abilityResults.delete(abilityQuery);
     renderCatalog();
   } else loadCatalog();
 });
@@ -1012,6 +1030,23 @@ let builderStage = '';
 let builderOwnedOnly = false;
 let stagesVisible = false;
 const builderResults = new Map();
+let abilitiesOnly = false;
+let abilityQuery = '';
+let abilitySort = false;
+const abilityResults = new Map();
+function requestAbilities(query) {
+  if (abilityResults.has(query)) return abilityResults.get(query);
+  const state = { ids: null, failed: false };
+  abilityResults.set(query, state);
+  const paths = query ? [0, 1, 2].flatMap(index => ['name', 'effect'].map(field =>
+    '/cards?' + new URLSearchParams({ ['abilities.' + index + '.' + field]: 'like:' + query.replaceAll('|', ' ') }))) :
+    ['/cards?' + new URLSearchParams({ 'abilities.0.name': 'notnull:' })];
+  Promise.all(paths.map(path => request(path)))
+    .then(lists => { state.ids = new Set(lists.flat().map(card => card.id)); })
+    .catch(() => { state.failed = true; })
+    .finally(() => { if (view === 'build' && data) renderCatalog(); });
+  return state;
+}
 
 function chipRow(id, entries, value, onChange) {
   const row = $(id);
@@ -1034,9 +1069,18 @@ function chipRow(id, entries, value, onChange) {
   for (const chip of row.children) chip.setAttribute('aria-pressed', String(chip.dataset.key === value));
 }
 function renderBuilderControls() {
-  if (view !== 'build') return;
+  const isBuilder = view === 'build';
+  $('abilitySort').hidden = !isBuilder;
+  $('abilitySort').disabled = !isBuilder;
+  if ($('sort').value === 'ability' && !isBuilder) $('sort').value = 'new';
+  if (!isBuilder) return;
+  if (abilitySort) $('sort').value = 'ability';
+  $('builderAbilities').setAttribute('aria-pressed', String(abilitiesOnly));
+  $('abilityForm').hidden = !abilitiesOnly;
+  $('clearAbilityQuery').hidden = !abilityQuery;
   chipRow('cardKinds', builderKinds, builderKind, key => {
     builderKind = key;
+    if (key && key !== 'Pokemon') resetAbilitySearch();
     builderType = '';
     builderTrainer = '';
     builderStage = '';
@@ -1087,7 +1131,35 @@ $('showStages').addEventListener('click', () => {
   } else builderStage = '';
   updateBuilderFilters();
 });
+function resetAbilitySearch() {
+  abilitiesOnly = false;
+  abilityQuery = '';
+  $('abilityQuery').value = '';
+}
+$('builderAbilities').addEventListener('click', () => {
+  if (abilitiesOnly) resetAbilitySearch();
+  else {
+    abilitiesOnly = true;
+    builderKind = 'Pokemon';
+    builderTrainer = '';
+  }
+  updateBuilderFilters();
+});
+$('abilityForm').addEventListener('submit', event => {
+  event.preventDefault();
+  abilityQuery = $('abilityQuery').value.trim();
+  updateBuilderFilters();
+});
+$('clearAbilityQuery').addEventListener('click', () => {
+  abilityQuery = '';
+  $('abilityQuery').value = '';
+  updateBuilderFilters();
+  $('abilityQuery').focus();
+});
 $('resetBuilder').addEventListener('click', () => {
+  resetAbilitySearch();
+  abilitySort = false;
+  if ($('sort').value === 'ability') $('sort').value = 'new';
   builderKind = builderType = builderTrainer = builderStage = '';
   builderOwnedOnly = stagesVisible = false;
   $('search').value = '';
